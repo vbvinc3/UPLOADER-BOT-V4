@@ -1,306 +1,245 @@
+# echo.py — optimized: renamer + error UI + universal impersonate usage
 # ©️ LISA-KOREA | @LISA_FAN_LK | NT_BOT_CHANNEL | TG-SORRY
 
-
 import logging
-logging.basicConfig(level=logging.DEBUG,
+logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-import requests, urllib.parse, filetype, os, time, shutil, tldextract, asyncio, json, math
-from PIL import Image
+
+import os, json, time, random, asyncio, shutil
+import requests, urllib.parse, filetype, tldextract
+from pyrogram import filters, Client, enums
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from plugins.config import Config
 from plugins.script import Translation
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-from pyrogram import filters
-import os
-import time
-import random
-from pyrogram import enums
-from pyrogram import Client
-from plugins.functions.verify import verify_user, check_token, check_verification, get_token
-from plugins.functions.forcesub import handle_force_subscribe
-from plugins.functions.display_progress import humanbytes
-from plugins.functions.help_uploadbot import DownLoadFile
-from plugins.functions.display_progress import progress_for_pyrogram, humanbytes, TimeFormatter
-from hachoir.metadata import extractMetadata
-from hachoir.parser import createParser
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import UserNotParticipant
 from plugins.functions.ran_text import random_char
-from plugins.database.database import db
 from plugins.database.add import AddUser
-from pyrogram.types import Thumbnail
-cookies_file = 'cookies.txt'
+from plugins.functions.forcesub import handle_force_subscribe
+from pyrogram.errors import UserNotParticipant
+from plugins.functions.display_progress import TimeFormatter, humanbytes
 
+# IMPORTANT: impersonate function must exist and stay unchanged as you requested.
+from plugins.functions.impersonate import impersonate_final_url
 
+# Optional cookies file
+cookies_file = 'cookies.txt' if os.path.exists('cookies.txt') else None
+
+# ----- Utility: sanitize filename (restore renamer) -----
+def sanitize_filename(filename: str) -> str:
+    if not filename:
+        return "download"
+    # remove URL params, fragments
+    filename = filename.split('?')[0].split('#')[0]
+    # replace dangerous chars
+    dangerous_chars = ['/', '\\', '..', '<', '>', ':', '"', '|', '?', '*', ';', '&', '=']
+    for ch in dangerous_chars:
+        filename = filename.replace(ch, '_')
+    # trim whitespace and dots
+    filename = filename.strip().strip('.')
+    # remove weird control chars
+    filename = ''.join(c for c in filename if ord(c) >= 32)
+    # safe max length
+    if len(filename) > 200:
+        name, ext = os.path.splitext(filename)
+        filename = name[:195] + ext
+    if filename == '':
+        filename = "download"
+    return filename
+
+# ----- Utility: basic sanitize URL wrapper (uses impersonate) -----
+def sanitize_url_for_extractor(url: str) -> str:
+    try:
+        if not url:
+            return url
+        lower = url.lower()
+        if any(x in lower for x in ("get_stream", "getstream", "okcdn", "embed", "redirect")):
+            # use your critical impersonate function — unchanged
+            return impersonate_final_url(url)
+    except Exception as e:
+        logger.debug(f"sanitize_url_for_extractor fail: {e}")
+    return url
+
+# Ensure download dir
+os.makedirs(Config.DOWNLOAD_LOCATION, exist_ok=True)
+
+@Client.on_message(filters.command(["start"]) & filters.private)
+async def start(bot, update):
+    await update.reply_text(
+        "👋 Send any video URL. I will extract formats and give download buttons.\n"
+        "Features: 1080p priority, rename support, aria2c (if installed), error UI."
+    )
 
 @Client.on_message(filters.private & filters.regex(pattern=".*http.*"))
 async def echo(bot, update):
-    if update.from_user.id != Config.OWNER_ID:  
-        if not await check_verification(bot, update.from_user.id) and Config.TRUE_OR_FALSE:
-            button = [[
-                InlineKeyboardButton("✓⃝ Vᴇʀɪꜰʏ ✓⃝", url=await get_token(bot, update.from_user.id, f"https://telegram.me/{Config.BOT_USERNAME}?start="))
-                ],[
-                InlineKeyboardButton("🔆 Wᴀᴛᴄʜ Hᴏᴡ Tᴏ Vᴇʀɪꜰʏ 🔆", url=f"{Config.VERIFICATION}")
-            ]]
-            await update.reply_text(
-                text="<b>Pʟᴇᴀsᴇ Vᴇʀɪꜰʏ Fɪʀsᴛ Tᴏ Usᴇ Mᴇ</b>",
-                protect_content=True,
-                reply_markup=InlineKeyboardMarkup(button)
-            )
+    # verification & force-subscribe
+    if update.from_user.id != Config.OWNER_ID:
+        if not await __import__("plugins.functions.verify", fromlist=["check_verification"]).check_verification(bot, update.from_user.id) and Config.TRUE_OR_FALSE:
+            btn = [[InlineKeyboardButton("✓⃝ Vᴇʀɪꜰʏ ✓⃝", url=await __import__("plugins.functions.verify", fromlist=["get_token"]).get_token(bot, update.from_user.id, f"https://telegram.me/{Config.BOT_USERNAME}?start="))]]
+            await update.reply_text("Pʟᴇᴀsᴇ Vᴇʀɪꜰʏ Fɪʀsᴛ Tᴏ Usᴇ Mᴇ", reply_markup=InlineKeyboardMarkup(btn))
             return
-    if Config.LOG_CHANNEL:
-        try:
-            log_message = await update.forward(Config.LOG_CHANNEL)
-            log_info = "Message Sender Information\n"
-            log_info += "\nFirst Name: " + update.from_user.first_name
-            log_info += "\nUser ID: " + str(update.from_user.id)
-            log_info += "\nUsername: @" + (update.from_user.username if update.from_user.username else "")
-            log_info += "\nUser Link: " + update.from_user.mention
-            await log_message.reply_text(
-                text=log_info,
-                disable_web_page_preview=True,
-                quote=True
-            )
-        except Exception as error:
-            print(error)
-    if not update.from_user:
-        return await update.reply_text("I don't know about you sar :(")
+
     await AddUser(bot, update)
     if Config.UPDATES_CHANNEL:
-        fsub = await handle_force_subscribe(bot, update)
-        if fsub == 400:
+        try:
+            fsub = await handle_force_subscribe(bot, update)
+            if fsub == 400:
+                return
+        except UserNotParticipant as e:
+            logger.error(f"Force sub error: {e}")
             return
 
-
-    logger.info(update.from_user)
-    url = update.text
+    # Parse incoming URL + optional rename / auth
+    url = (update.text or "").strip()
     youtube_dl_username = None
     youtube_dl_password = None
-    file_name = None
+    custom_name = None
 
-    print(url)
+    # if user provides rename or login in the message using '|' token
     if "|" in url:
-        url_parts = url.split("|")
-        if len(url_parts) == 2:
-            url = url_parts[0]
-            file_name = url_parts[1]
-        elif len(url_parts) == 4:
-            url = url_parts[0]
-            file_name = url_parts[1]
-            youtube_dl_username = url_parts[2]
-            youtube_dl_password = url_parts[3]
+        parts = [p.strip() for p in url.split("|")]
+        if len(parts) == 2:
+            url, custom_name = parts
+        elif len(parts) == 4:
+            url, custom_name, youtube_dl_username, youtube_dl_password = parts
         else:
-            for entity in update.entities:
-                if entity.type == "text_link":
-                    url = entity.url
-                elif entity.type == "url":
-                    o = entity.offset
-                    l = entity.length
+            # fallback: extract entity URL
+            for ent in update.entities:
+                if ent.type == "text_link":
+                    url = ent.url
+                elif ent.type == "url":
+                    o, l = ent.offset, ent.length
                     url = url[o:o + l]
-        if url is not None:
-            url = url.strip()
-        if file_name is not None:
-            file_name = file_name.strip()
-        # https://stackoverflow.com/a/761825/4723940
-        if youtube_dl_username is not None:
-            youtube_dl_username = youtube_dl_username.strip()
-        if youtube_dl_password is not None:
-            youtube_dl_password = youtube_dl_password.strip()
-        logger.info(url)
-        logger.info(file_name)
-    else:
-        for entity in update.entities:
-            if entity.type == "text_link":
-                url = entity.url
-            elif entity.type == "url":
-                o = entity.offset
-                l = entity.length
-                url = url[o:o + l]
-    if Config.HTTP_PROXY != "":
-        command_to_exec = [
-            "yt-dlp",
-            "--no-warnings",
-            "--allow-dynamic-mpd",
-            "--cookies", cookies_file,
-            "--no-check-certificate",
-            "-j",
-            url,
-            "--proxy", Config.HTTP_PROXY
-        ]
-    else:
-        command_to_exec = [
-            "yt-dlp",
-            "--no-warnings",
-            "--allow-dynamic-mpd",
-            "--cookies", cookies_file,
-            "--no-check-certificate",
-            "-j",
-            url,
-            "--geo-bypass-country",
-            "IN"
 
-        ]
-    if youtube_dl_username is not None:
-        command_to_exec.append("--username")
-        command_to_exec.append(youtube_dl_username)
-    if youtube_dl_password is not None:
-        command_to_exec.append("--password")
-        command_to_exec.append(youtube_dl_password)
-    logger.info(command_to_exec)
-    chk = await bot.send_message(
-            chat_id=update.chat.id,
-            text=f'Pʀᴏᴄᴇssɪɴɢ ʏᴏᴜʀ ʟɪɴᴋ ⌛',
-            disable_web_page_preview=True,
-            reply_to_message_id=update.id,
-            parse_mode=enums.ParseMode.HTML
-          )
-    process = await asyncio.create_subprocess_exec(
-        *command_to_exec,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    # Wait for the subprocess to finish
-    stdout, stderr = await process.communicate()
-    e_response = stderr.decode().strip()
-    logger.info(e_response)
-    t_response = stdout.decode().strip()
-    if e_response and "nonnumeric port" not in e_response:
-        # logger.warn("Status : FAIL", exc.returncode, exc.output)
-        error_message = e_response.replace("please report this issue on https://yt-dl.org/bug . Make sure you are using the latest version; see  https://yt-dl.org/update  on how to update. Be sure to call youtube-dl with the --verbose flag and include its complete output.", "")
-        if "This video is only available for registered users." in error_message:
-            error_message += Translation.SET_CUSTOM_USERNAME_PASSWORD
-        await chk.delete()
-        
-        time.sleep(10)
-        await bot.send_message(
-            chat_id=update.chat.id,
-            text=Translation.NO_VOID_FORMAT_FOUND.format(str(error_message)),
-            reply_to_message_id=update.id,
-            disable_web_page_preview=True
-        )
-        return False
-    if t_response:
-        x_reponse = t_response
-        if "\n" in x_reponse:
-            x_reponse, _ = x_reponse.split("\n")
-        response_json = json.loads(x_reponse)
-        randem = random_char(5)
-        save_ytdl_json_path = Config.DOWNLOAD_LOCATION + \
-            "/" + str(update.from_user.id) + f'{randem}' + ".json"
-        with open(save_ytdl_json_path, "w", encoding="utf8") as outfile:
-            json.dump(response_json, outfile, ensure_ascii=False)
-        # logger.info(response_json)
-        inline_keyboard = []
-        duration = None
-        if "duration" in response_json:
-            duration = response_json["duration"]
-        if "formats" in response_json:
-            for formats in response_json["formats"]:
-                format_id = formats.get("format_id")
-                format_string = formats.get("format_note")
-                if format_string is None:
-                    format_string = formats.get("format")
-                if "DASH" in format_string.upper():
-                    continue
-          
-                format_ext = formats.get("ext")
-                if formats.get('filesize'):
-                    size = formats['filesize']
-                elif formats.get('filesize_approx'):
-                    size = formats['filesize_approx']
-                else:
-                    size = 0
-                cb_string_video = "{}|{}|{}|{}".format(
-                    "video", format_id, format_ext, randem)
-                cb_string_file = "{}|{}|{}|{}".format(
-                    "file", format_id, format_ext, randem)
-                if format_string is not None and not "audio only" in format_string:
-                    ikeyboard = [
-                        InlineKeyboardButton(
-                            "📁 " + format_string + " " + format_ext + " " + humanbytes(size) + " ",
-                            callback_data=(cb_string_video).encode("UTF-8")
-                        )
-                    ]
-                    """if duration is not None:
-                        cb_string_video_message = "{}|{}|{}|{}|{}".format(
-                            "vm", format_id, format_ext, ran, randem)
-                        ikeyboard.append(
-                            InlineKeyboardButton(
-                                "VM",
-                                callback_data=(
-                                    cb_string_video_message).encode("UTF-8")
-                            )
-                        )"""
-                else:
-                    # special weird case :\
-                    ikeyboard = [
-                        InlineKeyboardButton(
-                            "📁 [" +
-                            "] ( " +
-                            humanbytes(size) + " )",
-                            callback_data=(cb_string_video).encode("UTF-8")
-                        )
-                    ]
-                inline_keyboard.append(ikeyboard)
-            if duration is not None:
-                cb_string_64 = "{}|{}|{}|{}".format("audio", "64k", "mp3", randem)
-                cb_string_128 = "{}|{}|{}|{}".format("audio", "128k", "mp3", randem)
-                cb_string_320 = "{}|{}|{}|{}".format("audio", "320k", "mp3", randem)
-                inline_keyboard.append([
-                    InlineKeyboardButton(
-                        "🎵 ᴍᴘ𝟹 " + "(" + "64 ᴋʙᴘs" + ")", callback_data=cb_string_64.encode("UTF-8")),
-                    InlineKeyboardButton(
-                        "🎵 ᴍᴘ𝟹 " + "(" + "128 ᴋʙᴘs" + ")", callback_data=cb_string_128.encode("UTF-8"))
-                ])
-                inline_keyboard.append([
-                    InlineKeyboardButton(
-                        "🎵 ᴍᴘ𝟹 " + "(" + "320 ᴋʙᴘs" + ")", callback_data=cb_string_320.encode("UTF-8"))
-                ])
-                inline_keyboard.append([                 
-                    InlineKeyboardButton(
-                        "🔒 ᴄʟᴏsᴇ", callback_data='close')               
-                ])
-        else:
-            format_id = response_json["format_id"]
-            format_ext = response_json["ext"]
-            cb_string_file = "{}|{}|{}|{}".format(
-                "file", format_id, format_ext, randem)
-            cb_string_video = "{}|{}|{}|{}".format(
-                "video", format_id, format_ext, randem)
-            inline_keyboard.append([
-                InlineKeyboardButton(
-                    "📁 Document",
-                    callback_data=(cb_string_video).encode("UTF-8")
-                )
-            ])
-        reply_markup = InlineKeyboardMarkup(inline_keyboard)
-        await chk.delete()
-        await bot.send_message(
-            chat_id=update.chat.id,
-            text=Translation.FORMAT_SELECTION.format(Thumbnail) + "\n" + Translation.SET_CUSTOM_USERNAME_PASSWORD,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True,
-            reply_to_message_id=update.id
-        )
     else:
-        #fallback for nonnumeric port a.k.a seedbox.io
-        inline_keyboard = []
-        cb_string_file = "{}={}={}".format(
-            "file", "LFO", "NONE")
-        cb_string_video = "{}={}={}".format(
-            "video", "OFL", "ENON")
-        inline_keyboard.append([
-            InlineKeyboardButton(
-                "📁 ᴍᴇᴅɪᴀ",
-                callback_data=(cb_string_video).encode("UTF-8")
-            )
-        ])
-        reply_markup = InlineKeyboardMarkup(inline_keyboard)
-        await chk.delete(True)
-        await bot.send_message(
-            chat_id=update.chat.id,
-            text=Translation.FORMAT_SELECTION,
-            reply_markup=reply_markup,
-            disable_web_page_preview=True,
-            reply_to_message_id=update.id
-        )
+        # extract URL from entities
+        for ent in update.entities:
+            if ent.type == "text_link":
+                url = ent.url
+            elif ent.type == "url":
+                o, l = ent.offset, ent.length
+                url = url[o:o + l]
+
+    if url is None:
+        await update.reply_text("No URL found in message.")
+        return
+
+    url = url.strip()
+    if custom_name:
+        custom_name = sanitize_filename(custom_name)
+
+    # Apply global sanitize / impersonate BEFORE yt-dlp probing
+    url = sanitize_url_for_extractor(url)
+    logger.info(f"Using sanitized URL: {url}")
+
+    # send processing UI
+    chk = await bot.send_message(chat_id=update.chat.id, text=Translation.DOWNLOAD_START, disable_web_page_preview=True, reply_to_message_id=update.id)
+
+    # Build yt-dlp command to probe (json)
+    cmd = [
+        "yt-dlp", "--no-warnings", "--allow-dynamic-mpd",
+        "--no-check-certificate", "-j", url
+    ]
+    if cookies_file and os.path.exists(cookies_file):
+        cmd.extend(["--cookies", cookies_file])
+    if Config.HTTP_PROXY:
+        cmd.extend(["--proxy", Config.HTTP_PROXY])
+    if youtube_dl_username:
+        cmd.extend(["--username", youtube_dl_username, "--password", youtube_dl_password])
+
+    logger.info(f"Probe command: {' '.join(cmd)}")
+    try:
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, stderr = await process.communicate()
+        stderr_text = stderr.decode().strip()
+        logger.debug(stderr_text)
+        if stderr_text and "nonnumeric port" not in stderr_text:
+            # show useful error to user instead of long traceback
+            msg = stderr_text
+            if "This video is only available for registered users." in msg:
+                msg += "\n" + Translation.SET_CUSTOM_USERNAME_PASSWORD
+            await chk.delete()
+            await bot.send_message(chat_id=update.chat.id, text=Translation.NO_VOID_FORMAT_FOUND.format(msg), reply_to_message_id=update.id, disable_web_page_preview=True)
+            return
+
+        out = stdout.decode().strip()
+        if not out:
+            await chk.delete()
+            await bot.send_message(chat_id=update.chat.id, text=Translation.NO_VOID_FORMAT_FOUND.format("Empty response from extractor."), reply_to_message_id=update.id)
+            return
+
+        # Get first JSON line
+        if "\n" in out:
+            out = out.split("\n")[0]
+        response_json = json.loads(out)
+
+    except Exception as e:
+        logger.exception("Probe failed")
+        try:
+            await chk.delete()
+        except:
+            pass
+        await bot.send_message(chat_id=update.chat.id, text=f"❌ Extraction failed: {str(e)}", reply_to_message_id=update.id)
+        return
+
+    # Create session json
+    randem = random_char(5)
+    session_name = f"{update.from_user.id}{randem}.json"
+    save_path = os.path.join(Config.DOWNLOAD_LOCATION, session_name)
+    with open(save_path, "w", encoding="utf8") as f:
+        json.dump(response_json, f, ensure_ascii=False)
+    logger.info(f"Saved session: {save_path}")
+
+    # Build simplified format buttons: 1080p priority, Best fallback, audio options
+    formats = response_json.get("formats", [])
+    best_audio_id = None
+    for fmt in formats:
+        if fmt.get("vcodec") == "none" and fmt.get("acodec") != "none":
+            if fmt.get("abr", 0) > 0:
+                best_audio_id = fmt.get("format_id")
+                break
+
+    format_1080 = None
+    best_format = None
+    for fmt in formats:
+        vcodec = fmt.get("vcodec", "none")
+        if vcodec == "none":
+            continue
+        height = fmt.get("height") or 0
+        fid = fmt.get("format_id")
+        ext = fmt.get("ext", "mp4")
+        size = fmt.get("filesize") or fmt.get("filesize_approx") or 0
+
+        # merge with best audio if needed
+        if fmt.get("acodec") == "none" and best_audio_id:
+            fid = f"{fid}+{best_audio_id}"
+
+        if height == 1080 and not format_1080:
+            format_1080 = {"id": fid, "ext": ext, "size": size, "h": height}
+        if not best_format or height > best_format.get("h", 0):
+            best_format = {"id": fid, "ext": ext, "size": size, "h": height}
+
+    inline_keyboard = []
+    if format_1080:
+        cb = f"video|{format_1080['id']}|{format_1080['ext']}|{randem}"
+        inline_keyboard.append([InlineKeyboardButton(f"🔥 1080p • {format_1080['ext'].upper()} • {humanbytes(format_1080['size'])}", callback_data=cb)])
+    if best_format and (not format_1080 or best_format['h'] != 1080):
+        cb = f"video|{best_format['id']}|{best_format['ext']}|{randem}"
+        inline_keyboard.append([InlineKeyboardButton(f"📹 Best ({best_format['h']}p) • {best_format['ext'].upper()} • {humanbytes(best_format['size'])}", callback_data=cb)])
+
+    # audio quick selects
+    inline_keyboard.append([InlineKeyboardButton("🎵 mp3 (64k)", callback_data=f"audio|64k|mp3|{randem}"),
+                            InlineKeyboardButton("🎵 mp3 (128k)", callback_data=f"audio|128k|mp3|{randem}")])
+    inline_keyboard.append([InlineKeyboardButton("🎵 mp3 (320k)", callback_data=f"audio|320k|mp3|{randem}")])
+
+    inline_keyboard.append([InlineKeyboardButton("🔁 Rename", callback_data=f"rename|{randem}"),
+                            InlineKeyboardButton("🔒 Close", callback_data="close")])
+
+    await chk.delete()
+    title = response_json.get("title", "Video")
+    duration = response_json.get("duration", 0)
+    await bot.send_message(chat_id=update.chat.id,
+                           text=f"📹 **{title}**\n\n⏱ Duration: {TimeFormatter(duration * 1000) if duration else 'Unknown'}\n\nSelect quality:",
+                           reply_markup=InlineKeyboardMarkup(inline_keyboard),
+                           parse_mode=enums.ParseMode.MARKDOWN,
+                           disable_web_page_preview=True,
+                           reply_to_message_id=update.id)
