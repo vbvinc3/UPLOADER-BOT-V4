@@ -39,7 +39,7 @@ async def progress_for_pyrogram(current, total, ud_type, message, start):
               ud_type,
               tmp
                 ),
-                parse_mode=enums.ParseMode.MARKDOWN,
+                parse_mode=enums.ParseMode.HTML,
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [ 
