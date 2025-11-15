@@ -134,7 +134,7 @@ async def echo(bot, update):
 
         if err and "nonnumeric port" not in err:
             await wait_msg.delete()
-            await update.reply_text(f"❌ Error:\n`{err}`", parse_mode="markdown")
+            await update.reply_text(f"❌ Error:\n<code>{err}</code>", parse_mode="html")
             return
         data = out.decode().strip()
         if "\n" in data:
@@ -212,8 +212,8 @@ async def echo(bot, update):
 
     await bot.send_message(
         update.chat.id,
-        f"📹 **{title}**\n⏱ {TimeFormatter(dur*1000) if dur else 'Unknown'}\n\nSelect quality:",
+        f"📹 <b>{title}</b>\n⏱ {TimeFormatter(dur*1000) if dur else 'Unknown'}\n\nSelect quality:",
         reply_markup=InlineKeyboardMarkup(kb),
-        parse_mode=enums.ParseMode.MARKDOWN,
+        parse_mode=enums.ParseMode.HTML,
         reply_to_message_id=update.id
     )
