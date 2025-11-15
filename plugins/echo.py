@@ -134,8 +134,7 @@ async def echo(bot, update):
 
         if err and "nonnumeric port" not in err:
             await wait_msg.delete()
-            await update.reply_text(f"❌ Error:\n`{err}`", parse_mode="markdown")
-            return
+            await update.reply_text(f"❌ Error:\n<code>{err}</code>",         parse_mode=enums.ParseMode.HTML)
         data = out.decode().strip()
         if "\n" in data:
             data = data.split("\n")[0]
